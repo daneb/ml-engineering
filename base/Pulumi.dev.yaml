@@ -1,0 +1,29 @@
+config:
+  # us-east-1 is used for the whole stack. Confirmed via
+  # `aws ec2 describe-instance-type-offerings` that af-south-1 (Cape Town)
+  # has NO G5 GPU capacity (empty result), so self-hosted LLM chapters need
+  # a region that has it. Bedrock itself is available in af-south-1 as of
+  # Nov 2025, but since us-east-1 covers both Bedrock and G5, there's no
+  # reason to split the stack across two regions for this project.
+  aws:region: us-east-1
+  aws:profile: mle-aws
+  ml-engineering-base:project_name: mle-aws-2e
+  ml-engineering-base:studio_user_name: dane
+  # --- Cost guardrails ---
+  ml-engineering-base:monthly_budget_usd: "100"
+  ml-engineering-base:budget_alert_email: textusreceptus@tuta.io
+  # Instance types allowed for training jobs, processing/transform jobs,
+  # hosted endpoints, and classic notebook instances. Anything outside this
+  # list is hard-denied. ml.g5.2xlarge is the ceiling — single GPU, 32GB
+  # RAM; enough for any single small-to-mid open model this book uses.
+  # Edit only if a specific chapter genuinely needs more, and know the
+  # hourly rate before you do (see README's model/instance table).
+  ml-engineering-base:allowed_instance_patterns:
+    - "ml.t3.*"
+    - "ml.t2.*"
+    - "ml.m5.*"
+    - "ml.c5.*"
+    - "ml.g5.xlarge"
+    - "ml.g5.2xlarge"
+  ml-engineering-base:knowledgeBaseId: XJMGCW9Y67
+encryptionsalt: v1:Bx3X/qji2mo=:v1:2vIiMEmMBGimGj2n:oirqkZmA43Q6MihBPVllMevPaGAGcA==

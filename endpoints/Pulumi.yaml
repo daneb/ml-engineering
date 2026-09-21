@@ -1,0 +1,6 @@
+name: ml-engineering-endpoints
+runtime:
+  name: python
+  options:
+    virtualenv: ../venv
+description: Model endpoints for "Machine Learning Engineering on AWS - Second Edition" (Joshua Arvin Lat) — GPU-backed SageMaker real-time endpoints, one per chapter exercise. Deliberately separate from the `base` project so a routine base `pulumi up` never touches GPU billing. Reads execution_role_arn from the `ml-engineering-base` stack via StackReference.

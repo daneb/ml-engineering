@@ -1,0 +1,6 @@
+name: ml-engineering-base
+runtime:
+  name: python
+  options:
+    virtualenv: ../venv
+description: Base IaC for "Machine Learning Engineering on AWS - Second Edition" (Joshua Arvin Lat) — networking, IAM, S3, SageMaker Studio, and cost guardrails. Cheap, always-on; safe to `pulumi up` anytime. GPU-billed model endpoints live in the sibling `endpoints` project.

@@ -1,0 +1,40 @@
+config:
+  aws:region: us-east-1
+  aws:profile: mle-aws
+  ml-engineering-endpoints:project_name: mle-aws-2e
+  # Model endpoints to deploy, one entry per chapter exercise. Remove an
+  # entry + `pulumi up` to tear down just that endpoint — see
+  # infrastructure/model_endpoints.py. THIS is the file to edit to stop or
+  # start GPU billing; nothing in ../base is affected either way.
+  #
+  # image_uri is a static, current AWS vLLM DLC tag (from
+  # https://aws.github.io/deep-learning-containers/reference/available_images/)
+  # — NOT resolved via the sagemaker SDK. We tried that three different ways
+  # (v2 in this venv, v2 in Studio, chasing the v3 API) and hit version
+  # churn every time. A hardcoded, sourced URI sidesteps all of it.
+  #
+  # Must be the AWS-account-owned ECR image (763104351884.dkr.ecr.<region>.
+  # amazonaws.com/...), NOT the public.ecr.aws/deep-learning-containers/...
+  # gallery mirror. SageMaker's CreateModel rejects non-ECR images outright
+  # ("Using non-ECR image ... without Vpc repository access mode is not
+  # supported") — the public gallery URI isn't an ECR image from
+  # SageMaker's point of view. Re-check the source page above for the
+  # current tag before reusing this.
+  #
+  # This was originally the plain HF PyTorch Inference Toolkit container
+  # (HF_MODEL_ID/HF_TASK env vars). Switched to vLLM because the plain
+  # toolkit's /invocations handler only accepts
+  # {"inputs": "plain string", "parameters": {...}} — it breaks with a
+  # TorchServe `dict + str` error the moment an agent framework (e.g.
+  # Strands' SageMakerAIModel) sends it an OpenAI-style chat payload
+  # ({"messages": [...], "max_tokens": ..., ...}). vLLM's /invocations
+  # speaks that flat OpenAI chat-completions shape natively, no wrapper.
+  # The HF `huggingface-vllm` DLC also exists but its env-var contract
+  # wasn't confirmable from primary docs; AWS's own vLLM DLC below uses
+  # the documented SM_VLLM_MODEL env var (set in model_endpoints.py).
+  ml-engineering-endpoints:endpoints:
+    - name: ch2
+      hf_model_id: TinyLlama/TinyLlama-1.1B-Chat-v1.0
+      instance_type: ml.g5.xlarge
+      image_uri: 763104351884.dkr.ecr.us-east-1.amazonaws.com/vllm:0.25.1-gpu-py312-cu130-ubuntu22.04-sagemaker
+encryptionsalt: v1:lW80fOUSho4=:v1:pVFRD/y29jQh65VL:E/MjaH1R/N1ZYRvj2XwUn7jHmZpBcw==
