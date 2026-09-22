@@ -92,3 +92,46 @@ def create_sagemaker_execution_role(bucket_arn: pulumi.Output[str], name_prefix:
     )
 
     return role
+
+
+def grant_knowledge_base_access(
+    role: aws.iam.Role,
+    knowledge_base_arn: pulumi.Output[str],
+    name_prefix: str,
+) -> aws.iam.RolePolicy:
+    """
+    Let the execution role query the Chapter 2 knowledge base from notebooks.
+
+    bedrock:Retrieve / RetrieveAndGenerate are data-plane actions: neither
+    AmazonSageMakerFullAccess nor AmazonBedrockReadOnly grants them. Model
+    invocation for RetrieveAndGenerate is already covered by the
+    BedrockModelAccess statement in the role's main inline policy.
+
+    Kept as a separate policy (rather than folded into the main inline
+    policy) because it depends on the knowledge base, which is created after
+    the role in __main__.py.
+    """
+    policy_document = knowledge_base_arn.apply(
+        lambda arn: json.dumps(
+            {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Sid": "KnowledgeBaseRetrieve",
+                        "Effect": "Allow",
+                        "Action": [
+                            "bedrock:Retrieve",
+                            "bedrock:RetrieveAndGenerate",
+                        ],
+                        "Resource": arn,
+                    }
+                ],
+            }
+        )
+    )
+
+    return aws.iam.RolePolicy(
+        f"{name_prefix}-bedrock-kb-access",
+        role=role.id,
+        policy=policy_document,
+    )

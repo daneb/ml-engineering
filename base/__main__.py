@@ -21,7 +21,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 import pulumi
 
 from infrastructure.networking import get_default_network
-from infrastructure.iam import create_sagemaker_execution_role
+from infrastructure.iam import create_sagemaker_execution_role, grant_knowledge_base_access
 from infrastructure.storage import create_ml_bucket
 from infrastructure.sagemaker_studio import create_studio_domain
 from infrastructure.guardrails import create_instance_type_guardrail
@@ -82,6 +82,10 @@ knowledge_base, kb_data_source = create_bedrock_knowledge_base(
     bucket.id,
     bucket.arn,
 )
+
+# Let Studio notebooks query the knowledge base (bedrock:Retrieve /
+# RetrieveAndGenerate), scoped to this one KB.
+grant_knowledge_base_access(execution_role, knowledge_base.arn, project_name)
 
 pulumi.export("bucket_name", bucket.id)
 pulumi.export("execution_role_arn", execution_role.arn)

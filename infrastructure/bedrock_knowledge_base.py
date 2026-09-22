@@ -159,7 +159,11 @@ def create_bedrock_knowledge_base(
                             },
                             "aclEnabled": False,
                             "version": "1",
-                        }
+                        },
+                        # Compact separators to match the string AWS stores
+                        # byte-for-byte; json.dumps' default ", " / ": " causes
+                        # a spurious in-place update on every `pulumi up`.
+                        separators=(",", ":"),
                     ),
                     deletion_protection_configuration=aws.bedrock.AgentDataSourceDataSourceConfigurationManagedKnowledgeBaseConnectorConfigurationDeletionProtectionConfigurationArgs(
                         deletion_protection_status="DISABLED",

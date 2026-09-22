@@ -4,26 +4,38 @@ Global resource stop — end-of-session cleanup for the AWS credits.
 
 Run this before you close your laptop for the day/week. It queries the
 live AWS account directly (not Pulumi state), so it catches everything
-currently billing regardless of what created it — this Pulumi stack,
-a notebook's own `.deploy()` call, or anything clicked together by hand
-in the console:
+currently billing regardless of what created it — the `base` or
+`endpoints` Pulumi stacks, a notebook's own `.deploy()` call, or anything
+clicked together by hand in the console.
 
-1. Stops every running Studio App (JupyterLab/CodeEditor kernel) — bills
-   by the hour whether you're actively using it or not.
-2. Lists any real-time SageMaker endpoints still running and asks before
-   deleting them — endpoints bill 24/7 until deleted. This is the exact
-   thing that burned the first $100.
-3. Stops every running classic Notebook Instance (the older, non-Studio
-   notebook type some chapters may still use) — same 24/7-while-running
-   billing model as Studio apps.
-4. Lists any in-progress Training Jobs. These are NOT auto-stopped (a job
-   you're deliberately running shouldn't be killed out from under you),
-   but you're shown them so a job you forgot about doesn't run unnoticed
-   — training jobs have a max runtime cap, but that cap can still be hours.
+Stopped or deleted (asks first where marked):
 
-What this deliberately does NOT touch: the Studio domain, IAM role, and
-S3 bucket. Those cost effectively nothing idle (domain: $0; bucket: cents;
-Studio EFS storage: a few cents/GB-month) — leaving them up between
+1. Studio Apps (JupyterLab/CodeEditor kernels) — bill by the hour whether
+   you're using them or not. Stopped without asking; your files live on the
+   space's storage and survive this.
+2. Real-time SageMaker endpoints (ASKS) — bill 24/7 until deleted. Includes
+   endpoints still Creating/Updating, not just InService: a deploy you
+   kicked off five minutes ago is already billing. This is the exact thing
+   that burned the first $100.
+   If a deleted endpoint is declared in `endpoints/Pulumi.dev.yaml`, you're
+   told to remove it there too — otherwise the next `pulumi refresh` +
+   `pulumi up` in `endpoints/` quietly recreates the GPU instance.
+3. Classic Notebook Instances (ASKS) — same 24/7-while-running billing.
+4. EMR clusters (ASKS) — Chapter 4's EMR/Iceberg exercise runs ad hoc from
+   Studio, outside Pulumi. A cluster left WAITING bills per instance-hour
+   just like a running one.
+
+Listed only, never auto-stopped (a job you're deliberately running
+shouldn't be killed out from under you, but a forgotten one shouldn't run
+unnoticed either):
+
+5. In-progress Training, Processing (ch6), Batch Transform and
+   Hyperparameter Tuning jobs.
+
+Deliberately NOT touched — the `base` stack: Studio domain, IAM roles,
+S3 bucket, guardrails, budget, and the Bedrock managed knowledge base.
+None of these bill for idle compute (domain: $0; bucket and Studio storage:
+cents; the managed KB has no instance behind it). Leaving them up between
 sessions is fine and saves you re-running `pulumi up` every time.
 
 Usage:
@@ -31,10 +43,30 @@ Usage:
 """
 
 import argparse
+import pathlib
 import sys
 
 import boto3
 
+REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+ENDPOINTS_STACK_CONFIG = REPO_ROOT / "endpoints" / "Pulumi.dev.yaml"
+
+# Every endpoint status that means an instance exists (or is about to) and
+# is billing. Excludes Deleting (already on its way out), Failed and
+# OutOfService (no instance running).
+BILLING_ENDPOINT_STATUSES = ("Creating", "Updating", "SystemUpdating", "RollingBack", "InService")
+
+# EMR cluster states that have EC2 instances attached.
+ACTIVE_EMR_STATES = ["STARTING", "BOOTSTRAPPING", "RUNNING", "WAITING"]
+
+
+def confirm(prompt: str) -> bool:
+    return input(f"\n{prompt} [y/N] ").strip().lower() == "y"
+
+
+# ---------------------------------------------------------------------------
+# 1. Studio apps
+# ---------------------------------------------------------------------------
 
 def stop_all_apps(sm, domain_id: str | None) -> None:
     paginator = sm.get_paginator("list_apps")
@@ -71,62 +103,169 @@ def stop_all_apps(sm, domain_id: str | None) -> None:
         print(f"Stopped {stopped} app(s).")
 
 
+# ---------------------------------------------------------------------------
+# 2. Endpoints (+ Pulumi drift warning for the `endpoints/` project)
+# ---------------------------------------------------------------------------
+
+def pulumi_declared_endpoint_names() -> set[str]:
+    """
+    Endpoint names the `endpoints/` Pulumi stack will (re)create, derived the
+    same way infrastructure/model_endpoints.py names them:
+    f"{project_name}-{spec['name']}-endpoint".
+    """
+    if not ENDPOINTS_STACK_CONFIG.exists():
+        return set()
+    try:
+        import yaml  # PyYAML ships as a dependency of the pulumi SDK
+    except ImportError:
+        print("(PyYAML not available — skipping the endpoints/ Pulumi drift check.)")
+        return set()
+
+    config = (yaml.safe_load(ENDPOINTS_STACK_CONFIG.read_text()) or {}).get("config", {})
+    project_name = config.get("ml-engineering-endpoints:project_name", "mle-aws-2e")
+    specs = config.get("ml-engineering-endpoints:endpoints") or []
+    return {f"{project_name}-{spec['name']}-endpoint" for spec in specs if "name" in spec}
+
+
 def list_and_confirm_endpoints(sm) -> None:
-    endpoints = sm.list_endpoints(StatusEquals="InService")["Endpoints"]
+    endpoints = [
+        ep
+        for page in sm.get_paginator("list_endpoints").paginate()
+        for ep in page["Endpoints"]
+        if ep["EndpointStatus"] in BILLING_ENDPOINT_STATUSES
+    ]
 
     if not endpoints:
-        print("No in-service endpoints found.")
+        print("No billing endpoints found.")
         return
 
-    print(f"\nFound {len(endpoints)} running endpoint(s) — these bill 24/7 until deleted:")
-    for ep in endpoints:
-        print(f"  - {ep['EndpointName']} (created {ep['CreationTime']})")
+    declared = pulumi_declared_endpoint_names()
 
-    answer = input("\nDelete ALL of these endpoints now? [y/N] ").strip().lower()
-    if answer != "y":
+    print(f"\nFound {len(endpoints)} endpoint(s) — these bill 24/7 until deleted:")
+    for ep in endpoints:
+        source = "Pulumi endpoints/ stack" if ep["EndpointName"] in declared else "not in Pulumi"
+        print(f"  - {ep['EndpointName']} [{ep['EndpointStatus']}] "
+              f"(created {ep['CreationTime']:%Y-%m-%d %H:%M}, {source})")
+
+    if not confirm("Delete ALL of these endpoints now?"):
         print("Leaving endpoints running. Remember they're still billing.")
         return
 
+    deleted = []
     for ep in endpoints:
         sm.delete_endpoint(EndpointName=ep["EndpointName"])
+        deleted.append(ep["EndpointName"])
         print(f"Deleted endpoint: {ep['EndpointName']}")
 
+    drifted = sorted(name for name in deleted if name in declared)
+    if drifted:
+        print(
+            "\n!! Pulumi drift: these endpoints are still declared in "
+            "endpoints/Pulumi.dev.yaml:\n"
+            + "".join(f"     - {name}\n" for name in drifted)
+            + "   Remove their entries there, then run:\n"
+            "     cd endpoints && pulumi refresh --yes && pulumi up\n"
+            "   Otherwise the next refresh + up in endpoints/ recreates them and\n"
+            "   GPU billing starts again."
+        )
+
+
+# ---------------------------------------------------------------------------
+# 3. Classic notebook instances
+# ---------------------------------------------------------------------------
 
 def stop_notebook_instances(sm) -> None:
-    instances = sm.list_notebook_instances(StatusEquals="InService")["NotebookInstances"]
+    instances = [
+        ni
+        for page in sm.get_paginator("list_notebook_instances").paginate()
+        for ni in page["NotebookInstances"]
+        if ni["NotebookInstanceStatus"] in ("Pending", "InService")
+    ]
 
     if not instances:
-        print("No in-service classic notebook instances found.")
+        print("No running classic notebook instances found.")
         return
 
     print(f"\nFound {len(instances)} running notebook instance(s):")
     for ni in instances:
-        print(f"  - {ni['NotebookInstanceName']} ({ni['InstanceType']})")
+        print(f"  - {ni['NotebookInstanceName']} ({ni['InstanceType']}) [{ni['NotebookInstanceStatus']}]")
 
-    answer = input("\nStop ALL of these notebook instances now? [y/N] ").strip().lower()
-    if answer != "y":
+    if not confirm("Stop ALL of these notebook instances now?"):
         print("Leaving notebook instances running. Remember they're still billing.")
         return
 
     for ni in instances:
+        if ni["NotebookInstanceStatus"] == "Pending":
+            # StopNotebookInstance rejects Pending instances; they have to
+            # reach InService first.
+            print(f"Skipping {ni['NotebookInstanceName']} (still Pending) — re-run the script in a few minutes.")
+            continue
         sm.stop_notebook_instance(NotebookInstanceName=ni["NotebookInstanceName"])
         print(f"Stopping notebook instance: {ni['NotebookInstanceName']}")
 
 
-def list_training_jobs(sm) -> None:
-    jobs = sm.list_training_jobs(StatusEquals="InProgress")["TrainingJobSummaries"]
+# ---------------------------------------------------------------------------
+# 4. EMR clusters (Chapter 4 — created ad hoc, outside Pulumi)
+# ---------------------------------------------------------------------------
 
-    if not jobs:
-        print("No in-progress training jobs found.")
+def terminate_emr_clusters(emr) -> None:
+    clusters = [
+        c
+        for page in emr.get_paginator("list_clusters").paginate(ClusterStates=ACTIVE_EMR_STATES)
+        for c in page["Clusters"]
+    ]
+
+    if not clusters:
+        print("No active EMR clusters found.")
         return
 
-    print(f"\nFound {len(jobs)} in-progress training job(s) — NOT auto-stopped, check these manually:")
-    for job in jobs:
-        print(f"  - {job['TrainingJobName']} (started {job['CreationTime']})")
+    print(f"\nFound {len(clusters)} active EMR cluster(s) — these bill per instance-hour, even when WAITING:")
+    for c in clusters:
+        print(f"  - {c['Name']} ({c['Id']}) [{c['Status']['State']}]")
+
+    if not confirm("TERMINATE all of these clusters now? (not reversible — data on cluster HDFS is lost)"):
+        print("Leaving EMR clusters running. Remember they're still billing.")
+        return
+
+    emr.terminate_job_flows(JobFlowIds=[c["Id"] for c in clusters])
+    for c in clusters:
+        print(f"Terminating EMR cluster: {c['Name']} ({c['Id']})")
+
+
+# ---------------------------------------------------------------------------
+# 5. In-progress jobs — listed, never stopped
+# ---------------------------------------------------------------------------
+
+def list_in_progress_jobs(sm) -> None:
+    # (label, paginator name, response key, name field)
+    job_kinds = [
+        ("training", "list_training_jobs", "TrainingJobSummaries", "TrainingJobName"),
+        ("processing", "list_processing_jobs", "ProcessingJobSummaries", "ProcessingJobName"),
+        ("batch transform", "list_transform_jobs", "TransformJobSummaries", "TransformJobName"),
+        ("tuning", "list_hyper_parameter_tuning_jobs", "HyperParameterTuningJobSummaries",
+         "HyperParameterTuningJobName"),
+    ]
+
+    found_any = False
+    for label, paginator_name, key, name_field in job_kinds:
+        jobs = [
+            job
+            for page in sm.get_paginator(paginator_name).paginate(StatusEquals="InProgress")
+            for job in page[key]
+        ]
+        if not jobs:
+            continue
+        found_any = True
+        print(f"\nFound {len(jobs)} in-progress {label} job(s) — NOT auto-stopped, check these manually:")
+        for job in jobs:
+            print(f"  - {job[name_field]} (started {job['CreationTime']:%Y-%m-%d %H:%M})")
+
+    if not found_any:
+        print("No in-progress training, processing, transform or tuning jobs found.")
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--profile", required=True, help="AWS CLI profile name")
     parser.add_argument("--region", default="us-east-1")
     parser.add_argument("--domain-id", default=None, help="Restrict app cleanup to one Studio domain")
@@ -134,11 +273,24 @@ def main() -> None:
 
     session = boto3.Session(profile_name=args.profile, region_name=args.region)
     sm = session.client("sagemaker")
+    emr = session.client("emr")
 
+    print("== Studio apps ==")
     stop_all_apps(sm, args.domain_id)
+
+    print("\n== Endpoints ==")
     list_and_confirm_endpoints(sm)
+
+    print("\n== Classic notebook instances ==")
     stop_notebook_instances(sm)
-    list_training_jobs(sm)
+
+    print("\n== EMR clusters ==")
+    terminate_emr_clusters(emr)
+
+    print("\n== In-progress jobs ==")
+    list_in_progress_jobs(sm)
+
+    print("\nDone. Confirm with: venv/bin/python scripts/check_credits.py --profile", args.profile)
 
 
 if __name__ == "__main__":

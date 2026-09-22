@@ -25,5 +25,4 @@ config:
     - "ml.c5.*"
     - "ml.g5.xlarge"
     - "ml.g5.2xlarge"
-  ml-engineering-base:knowledgeBaseId: XJMGCW9Y67
 encryptionsalt: v1:Bx3X/qji2mo=:v1:2vIiMEmMBGimGj2n:oirqkZmA43Q6MihBPVllMevPaGAGcA==

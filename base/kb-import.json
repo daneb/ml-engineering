@@ -1,0 +1,29 @@
+{
+  "resources": [
+    {
+      "type": "aws:iam/policy:Policy",
+      "name": "mle-aws-2e-kb-cloudwatch-policy",
+      "id": "arn:aws:iam::593002483669:policy/service-role/AmazonBedrockCloudWatchPolicyForKnowledgeBase_isltx"
+    },
+    {
+      "type": "aws:iam/policy:Policy",
+      "name": "mle-aws-2e-kb-s3-policy",
+      "id": "arn:aws:iam::593002483669:policy/service-role/AmazonBedrockS3PolicyForKnowledgeBase_isltx"
+    },
+    {
+      "type": "aws:iam/role:Role",
+      "name": "mle-aws-2e-kb-role",
+      "id": "AmazonBedrockExecutionRoleForKnowledgeBase_isltx"
+    },
+    {
+      "type": "aws:bedrock/agentKnowledgeBase:AgentKnowledgeBase",
+      "name": "mle-aws-2e-knowledge-base",
+      "id": "XJMGCW9Y67"
+    },
+    {
+      "type": "aws:bedrock/agentDataSource:AgentDataSource",
+      "name": "mle-aws-2e-kb-data-source",
+      "id": "PQUIN2OHRV,XJMGCW9Y67"
+    }
+  ]
+}
