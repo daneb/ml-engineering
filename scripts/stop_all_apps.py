@@ -47,6 +47,7 @@ import pathlib
 import sys
 
 import boto3
+from botocore.exceptions import ClientError
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 ENDPOINTS_STACK_CONFIG = REPO_ROOT / "endpoints" / "Pulumi.dev.yaml"
@@ -58,6 +59,12 @@ BILLING_ENDPOINT_STATUSES = ("Creating", "Updating", "SystemUpdating", "RollingB
 
 # EMR cluster states that have EC2 instances attached.
 ACTIVE_EMR_STATES = ["STARTING", "BOOTSTRAPPING", "RUNNING", "WAITING"]
+
+# Error codes meaning "this service isn't usable on this account" rather than
+# a real failure. Free Plan accounts get SubscriptionRequiredException for
+# services they can't use until upgraded to a paid plan (EMR is one) — if the
+# service can't be used, nothing of that type can be running and billing.
+SERVICE_UNAVAILABLE_CODES = {"SubscriptionRequiredException", "OptInRequired"}
 
 
 def confirm(prompt: str) -> bool:
@@ -209,11 +216,17 @@ def stop_notebook_instances(sm) -> None:
 # ---------------------------------------------------------------------------
 
 def terminate_emr_clusters(emr) -> None:
-    clusters = [
-        c
-        for page in emr.get_paginator("list_clusters").paginate(ClusterStates=ACTIVE_EMR_STATES)
-        for c in page["Clusters"]
-    ]
+    try:
+        clusters = [
+            c
+            for page in emr.get_paginator("list_clusters").paginate(ClusterStates=ACTIVE_EMR_STATES)
+            for c in page["Clusters"]
+        ]
+    except ClientError as e:
+        if e.response["Error"]["Code"] in SERVICE_UNAVAILABLE_CODES:
+            print("EMR isn't enabled on this account (Free Plan restriction) — no clusters can exist. Skipping.")
+            return
+        raise
 
     if not clusters:
         print("No active EMR clusters found.")
@@ -264,7 +277,7 @@ def list_in_progress_jobs(sm) -> None:
         print("No in-progress training, processing, transform or tuning jobs found.")
 
 
-def main() -> None:
+def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--profile", required=True, help="AWS CLI profile name")
     parser.add_argument("--region", default="us-east-1")
@@ -275,22 +288,34 @@ def main() -> None:
     sm = session.client("sagemaker")
     emr = session.client("emr")
 
-    print("== Studio apps ==")
-    stop_all_apps(sm, args.domain_id)
+    sections = [
+        ("Studio apps", lambda: stop_all_apps(sm, args.domain_id)),
+        ("Endpoints", lambda: list_and_confirm_endpoints(sm)),
+        ("Classic notebook instances", lambda: stop_notebook_instances(sm)),
+        ("EMR clusters", lambda: terminate_emr_clusters(emr)),
+        ("In-progress jobs", lambda: list_in_progress_jobs(sm)),
+    ]
 
-    print("\n== Endpoints ==")
-    list_and_confirm_endpoints(sm)
+    # Each section runs independently: one service erroring (permissions,
+    # throttling, a service not enabled) must never stop the rest of the
+    # cleanup from running — a crash after step 1 would leave endpoints
+    # billing unnoticed.
+    failed = []
+    for title, run in sections:
+        print(f"\n== {title} ==")
+        try:
+            run()
+        except ClientError as e:
+            err = e.response["Error"]
+            print(f"!! {title} check failed: {err['Code']}: {err['Message']}")
+            failed.append(title)
 
-    print("\n== Classic notebook instances ==")
-    stop_notebook_instances(sm)
-
-    print("\n== EMR clusters ==")
-    terminate_emr_clusters(emr)
-
-    print("\n== In-progress jobs ==")
-    list_in_progress_jobs(sm)
+    if failed:
+        print("\n!! Not checked — verify these manually in the console: " + ", ".join(failed))
+        return 1
 
     print("\nDone. Confirm with: venv/bin/python scripts/check_credits.py --profile", args.profile)
+    return 0
 
 
 if __name__ == "__main__":

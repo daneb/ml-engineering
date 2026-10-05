@@ -21,7 +21,7 @@ inside the named project folder; scripts run from the repo root.
 
 | When | Where | Command |
 | --- | --- | --- |
-| Start of session | browser | Open the Studio URL: `cd base && pulumi stack output studio_domain_url` |
+| Start of session | repo root | `venv/bin/python scripts/open_studio.py --profile mle-aws` (or console: SageMaker AI → Domains → User profiles → dane → Launch → Studio) |
 | Check what's billing right now | repo root | `venv/bin/python scripts/check_credits.py --profile mle-aws` |
 | **End of session (always)** | repo root | `venv/bin/python scripts/stop_all_apps.py --profile mle-aws --region us-east-1` |
 | Confirm nothing is left running | repo root | re-run `check_credits.py` |
@@ -102,6 +102,7 @@ ml-engineering/
 │   └── model_endpoints.py        # config-driven SageMaker model endpoints (vLLM DLC)
 │
 ├── scripts/
+│   ├── open_studio.py            # opens Studio via a fresh presigned URL (IAM-auth domain)
 │   ├── stop_all_apps.py          # end-of-session cleanup — run this, not `pulumi destroy`
 │   └── check_credits.py          # credit balance + what's billing right now
 │
@@ -137,7 +138,8 @@ behind it, only storage and per-query cost (ADR 0001, decision 4).
 
 | Stack | Output | Used for |
 | --- | --- | --- |
-| `base` | `studio_domain_url`, `studio_domain_id`, `studio_user_profile_name` | Opening Studio |
+| `base` | `studio_domain_id`, `studio_user_profile_name` | Read by `open_studio.py` to generate a presigned Studio URL |
+| `base` | `studio_domain_url` | Reference only — opening it directly fails with "Invalid or Expired Auth Token" |
 | `base` | `bucket_name` | Notebook data paths |
 | `base` | `execution_role_arn` | Consumed by `endpoints/` via `StackReference` |
 | `base` | `knowledge_base_id`, `data_source_id` | Chapter 2 notebooks |
@@ -260,9 +262,22 @@ between sessions; that saves nothing and costs you recreation time.
 What bills while idle: running Studio apps and real-time endpoints, both of
 which `stop_all_apps.py` handles.
 
-When you come back, reopen Studio from the domain URL. Your files and the
-packages installed in your home directory are where you left them. No
-`pulumi up` is needed unless you've done a full `pulumi destroy`.
+When you come back, open Studio with a fresh presigned URL:
+
+```bash
+venv/bin/python scripts/open_studio.py --profile mle-aws
+```
+
+or use the console's **Launch** button. Useful flags: `--print-only` prints
+the link instead of opening it, `--session-hours` sets the session length
+(0.5 to 12, default 12), and `--domain-id`/`--user` skip the Pulumi lookup
+and its passphrase prompt.
+The domain uses IAM auth, so the bare domain URL, bookmarks and old
+presigned links all fail with "Invalid or Expired Auth Token". A presigned
+link must be opened within 5 minutes, and the session it starts lasts up to
+12 hours. Your files and the packages installed in your home directory are
+where you left them. No `pulumi up` is needed unless you've done a full
+`pulumi destroy`.
 
 ---
 

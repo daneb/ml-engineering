@@ -1,6 +1,30 @@
-venv/
+# Python
 __pycache__/
 *.pyc
+*.egg-info
+dist/
+build/
+
+# Environments / secrets
 .env
+venv/
+.venv/
+
+# Model weights / artifacts
+*.pt
+*.bin
+*.onnx
+*.safetensors
+
+# Experiment outputs
+wandb/
+outputs/
+runs/
+checkpoints/
+
+# OS
+.DS_Store
+
+# Project-specific
 Pulumi.*.yaml.bak
 *.zip
