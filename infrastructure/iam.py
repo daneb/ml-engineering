@@ -13,7 +13,8 @@ Scope notes for a learning account:
     down. It's broad but scoped to the SageMaker service surface.
   - The inline policy below adds only what SageMakerFullAccess does NOT
     already cover: Bedrock model invocation (for the AgentCore / Bedrock
-    chapters) and access to the project's own S3 bucket.
+    chapters), access to the project's own S3 bucket, and read access to
+    SageMaker's CloudWatch log groups for debugging jobs and endpoints.
   - This role has no IAM-modifying permissions, so a compromised notebook
     can't escalate itself to account-admin.
 """
@@ -79,6 +80,19 @@ def create_sagemaker_execution_role(bucket_arn: pulumi.Output[str], name_prefix:
                             "s3:ListBucket",
                         ],
                         "Resource": [arn, f"{arn}/*"],
+                    },
+                    {
+                        # Read container output from training jobs and endpoints
+                        # (e.g. /aws/sagemaker/Endpoints/<name>) when debugging
+                        # a failed deploy from a notebook.
+                        "Sid": "SageMakerLogsRead",
+                        "Effect": "Allow",
+                        "Action": [
+                            "logs:FilterLogEvents",
+                            "logs:GetLogEvents",
+                            "logs:DescribeLogStreams",
+                        ],
+                        "Resource": "arn:aws:logs:*:*:log-group:/aws/sagemaker/*",
                     },
                 ],
             }
