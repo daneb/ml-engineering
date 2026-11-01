@@ -41,6 +41,7 @@ allowed_instance_patterns = config.get_object("allowed_instance_patterns") or [
     "ml.t2.*",
     "ml.m5.*",
     "ml.c5.*",
+    "ml.g4dn.xlarge",
     "ml.g5.xlarge",
     "ml.g5.2xlarge",
 ]

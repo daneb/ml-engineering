@@ -310,7 +310,7 @@ using an instance type outside the allow-list, regardless of what the book's
 screenshots suggest. The default allow-list lives in `base/Pulumi.dev.yaml`:
 
 ```
-ml.t3.*, ml.t2.*, ml.m5.*, ml.c5.*, ml.g5.xlarge, ml.g5.2xlarge
+ml.t3.*, ml.t2.*, ml.m5.*, ml.c5.*, ml.g4dn.xlarge, ml.g5.xlarge, ml.g5.2xlarge
 ```
 
 `ml.g5.2xlarge` (one A10G GPU, 32 GB RAM) is the ceiling, enough for any
