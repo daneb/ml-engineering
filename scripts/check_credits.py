@@ -12,7 +12,8 @@ Two different signals here, on two different clocks:
    `pulumi up` — creating the domain/role/bucket costs ~$0, so there's
    nothing for it to reflect yet.
 
-2. Live SageMaker resources (Studio apps + endpoints) — this IS real
+2. Live SageMaker resources (Studio apps, endpoints, and in-progress
+   training/processing/transform jobs) — this IS real
    time. It answers "is anything actually running and billing right
    now", which is the more useful question most of the time, since it
    catches spend before it ever shows up in #1.
@@ -36,6 +37,7 @@ HOURLY_RATE_USD = {
     "ml.t2.medium": 0.06,
     "ml.m5.xlarge": 0.23,
     "ml.c5.xlarge": 0.19,
+    "ml.g4dn.xlarge": 0.74,
     "ml.g5.xlarge": 1.21,
     "ml.g5.2xlarge": 1.52,
 }
@@ -108,6 +110,41 @@ def print_live_resources(session: boto3.Session, region: str) -> None:
         print(
             f"  [Endpoint] {ep['EndpointName']} on {instance_type} "
             f"— running {duration_hrs:.1f}h — est. {est} — BILLS 24/7 UNTIL DELETED"
+        )
+
+    # Jobs: bill per second while InProgress and stop on their own.
+    def job_line(kind, name, instance_type, count, started):
+        duration_hrs = (now - started).total_seconds() / 3600 if started else None
+        rate = HOURLY_RATE_USD.get(instance_type)
+        est = f"~${rate * count * duration_hrs:.2f}" if rate and duration_hrs else "unknown rate"
+        hrs = f"{duration_hrs:.1f}h" if duration_hrs is not None else "unknown"
+        print(f"  [{kind}] {name} on {count}x {instance_type} — running {hrs} — est. {est}")
+
+    for summary in sm.list_training_jobs(StatusEquals="InProgress")["TrainingJobSummaries"]:
+        found_anything = True
+        d = sm.describe_training_job(TrainingJobName=summary["TrainingJobName"])
+        rc = d["ResourceConfig"]
+        job_line(
+            "Training", d["TrainingJobName"], rc.get("InstanceType", "unknown"),
+            rc.get("InstanceCount", 1), d.get("TrainingStartTime") or d.get("CreationTime"),
+        )
+
+    for summary in sm.list_processing_jobs(StatusEquals="InProgress")["ProcessingJobSummaries"]:
+        found_anything = True
+        d = sm.describe_processing_job(ProcessingJobName=summary["ProcessingJobName"])
+        cc = d["ProcessingResources"]["ClusterConfig"]
+        job_line(
+            "Processing", d["ProcessingJobName"], cc.get("InstanceType", "unknown"),
+            cc.get("InstanceCount", 1), d.get("ProcessingStartTime") or d.get("CreationTime"),
+        )
+
+    for summary in sm.list_transform_jobs(StatusEquals="InProgress")["TransformJobSummaries"]:
+        found_anything = True
+        d = sm.describe_transform_job(TransformJobName=summary["TransformJobName"])
+        tr = d["TransformResources"]
+        job_line(
+            "Transform", d["TransformJobName"], tr.get("InstanceType", "unknown"),
+            tr.get("InstanceCount", 1), d.get("TransformStartTime") or d.get("CreationTime"),
         )
 
     if not found_anything:
