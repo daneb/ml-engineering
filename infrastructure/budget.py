@@ -8,6 +8,10 @@ ceiling, instead of finding out a day later when the credits were gone.
 
 Alerts fire at 50%, 80%, and 100% of actual spend, plus a forecasted-to-
 exceed-100% warning so you get a heads-up before the month even ends.
+
+Credits are excluded on purpose. AWS's default nets credits off the cost, so
+the budget would read $0 - and never alert - until the credit is used up,
+which is exactly when the warning is too late.
 """
 
 import pulumi_aws as aws
@@ -49,5 +53,8 @@ def create_cost_budget(
         time_unit="MONTHLY",
         time_period_start="2025-01-01_00:00",
         time_period_end="2087-06-15_00:00",
+        cost_types=aws.budgets.BudgetCostTypesArgs(
+            include_credit=False,
+        ),
         notifications=notifications,
     )

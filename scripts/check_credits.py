@@ -12,9 +12,9 @@ Two different signals here, on two different clocks:
    `pulumi up` — creating the domain/role/bucket costs ~$0, so there's
    nothing for it to reflect yet.
 
-2. Live SageMaker resources (Studio apps, endpoints, and in-progress
-   training/processing/transform jobs) — this IS real
-   time. It answers "is anything actually running and billing right
+2. Live resources (SageMaker Studio apps, endpoints, and in-progress
+   training/processing/transform jobs; Chapter 4 EMR clusters and S3 table
+   buckets) — this IS real time. It answers "is anything actually running and billing right
    now", which is the more useful question most of the time, since it
    catches spend before it ever shows up in #1.
 
@@ -29,6 +29,13 @@ from datetime import datetime, timezone
 import boto3
 from botocore.exceptions import ClientError, UnknownServiceError
 
+# Same set stop_all_apps.py uses: the service isn't usable on this account
+# (e.g. EMR on the Free Plan), so nothing of that type can be billing.
+SERVICE_UNAVAILABLE_CODES = {"SubscriptionRequiredException", "OptInRequired"}
+
+# EMR cluster states that have EC2 instances attached.
+ACTIVE_EMR_STATES = ["STARTING", "BOOTSTRAPPING", "RUNNING", "WAITING"]
+
 # Rough on-demand hourly rates (us-east-1), used only to estimate what a
 # currently-running resource is costing so far this session — not an
 # official AWS figure, just a sanity-check multiplier.
@@ -40,6 +47,17 @@ HOURLY_RATE_USD = {
     "ml.g4dn.xlarge": 0.74,
     "ml.g5.xlarge": 1.21,
     "ml.g5.2xlarge": 1.52,
+}
+
+# Chapter 4 EMR nodes are plain EC2 instances plus an EMR surcharge per
+# instance-hour (EC2 on-demand + EMR fee, us-east-1). Rough, same caveat.
+EMR_HOURLY_RATE_USD = {
+    "m5.large": 0.12,
+    "m5.xlarge": 0.24,
+    "m5.2xlarge": 0.48,
+    "m5.4xlarge": 0.96,
+    "c5.xlarge": 0.21,
+    "r5.xlarge": 0.31,
 }
 
 
@@ -148,7 +166,83 @@ def print_live_resources(session: boto3.Session, region: str) -> None:
         )
 
     if not found_anything:
-        print("  Nothing running. No compute is currently billing.")
+        print("  No SageMaker compute is currently billing.")
+
+
+def print_emr_clusters(session: boto3.Session, region: str) -> None:
+    """Chapter 4's EMR clusters: EC2 instance-hours that SageMaker calls can't see."""
+    print()
+    print("=" * 60)
+    print(f"EMR CLUSTERS ({region}) — Chapter 4, bills per instance-hour even when idle")
+    print("=" * 60)
+    emr = session.client("emr", region_name=region)
+    now = datetime.now(timezone.utc)
+    try:
+        clusters = [
+            c
+            for page in emr.get_paginator("list_clusters").paginate(ClusterStates=ACTIVE_EMR_STATES)
+            for c in page["Clusters"]
+        ]
+        if not clusters:
+            print("  No active EMR clusters.")
+            return
+        for c in clusters:
+            groups = emr.list_instance_groups(ClusterId=c["Id"])["InstanceGroups"]
+            created = c["Status"]["Timeline"].get("CreationDateTime")
+            hrs = (now - created).total_seconds() / 3600 if created else None
+            hourly, unknown = 0.0, False
+            parts = []
+            for g in groups:
+                count = g.get("RunningInstanceCount", 0)
+                itype = g["InstanceType"]
+                parts.append(f"{count}x {itype} ({g['InstanceGroupType'].lower()})")
+                rate = EMR_HOURLY_RATE_USD.get(itype)
+                if rate is None:
+                    unknown = True
+                else:
+                    hourly += rate * count
+            if unknown or hrs is None:
+                est = "unknown rate"
+            else:
+                est = f"~${hourly:.2f}/h, ~${hourly * hrs:.2f} so far"
+            hrs_str = f"{hrs:.1f}h" if hrs is not None else "unknown"
+            print(
+                f"  [EMR]      {c['Name']} ({c['Id']}) [{c['Status']['State']}] "
+                f"{', '.join(parts)} — up {hrs_str} — {est}"
+            )
+    except ClientError as e:
+        if e.response["Error"]["Code"] in SERVICE_UNAVAILABLE_CODES:
+            print("  EMR isn't enabled on this account (Free Plan restriction) — no clusters can exist.")
+        else:
+            print(f"  Could not list EMR clusters: {e}")
+
+
+def print_table_buckets(session: boto3.Session, region: str) -> None:
+    """S3 Tables buckets from Chapter 4: storage only, but easy to forget — no teardown step in the book."""
+    print()
+    print("=" * 60)
+    print(f"S3 TABLE BUCKETS ({region}) — storage only, not auto-deleted")
+    print("=" * 60)
+    try:
+        s3t = session.client("s3tables", region_name=region)
+        buckets = [
+            b
+            for page in s3t.get_paginator("list_table_buckets").paginate()
+            for b in page["tableBuckets"]
+        ]
+    except UnknownServiceError:
+        print("  Your installed boto3/botocore is too old to know about 's3tables'.")
+        print("  Run: pip install --upgrade boto3")
+        return
+    except ClientError as e:
+        print(f"  Could not list table buckets: {e}")
+        return
+    if not buckets:
+        print("  No table buckets.")
+        return
+    for b in buckets:
+        print(f"  [TableBucket] {b['name']} (created {b['createdAt']:%Y-%m-%d})")
+    print("  Delete tables, namespaces, then the bucket when you're done with Chapter 4.")
 
 
 def main() -> None:
@@ -160,6 +254,8 @@ def main() -> None:
     session = boto3.Session(profile_name=args.profile)
     print_credit_balance(session)
     print_live_resources(session, args.region)
+    print_emr_clusters(session, args.region)
+    print_table_buckets(session, args.region)
 
 
 if __name__ == "__main__":
